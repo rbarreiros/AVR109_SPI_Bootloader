@@ -8,7 +8,7 @@ APPNAME = main
 MMCU = atmega328
 F_CPU = 20000000
 
-# Atmega328 0x380 * 2 = 0x7000
+# Atmega328 0x380 * 2 = 0x7000 
 BOOTADDR = 0x7000
 
 PROGRAMMER = usbasp
