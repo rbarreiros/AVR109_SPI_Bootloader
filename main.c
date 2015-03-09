@@ -6,7 +6,6 @@
 #include <avr/pgmspace.h>
 #include <util/delay.h>
 #include <avr109.h>
-//#include <intrinsics.h>
 
 #define VERSION_H '1'
 #define VERSION_L '0'
@@ -18,11 +17,14 @@ typedef uint8_t bool;
 #define false 0
 
 #define PROG_START   0x0000
-#define BOOT_TIMEOUT 4000
+#define BOOT_TIMEOUT 4000 // 4 seconds
+#define SPI_TIMEOUT  4000 // 4 seconds
 
-#ifndef BOOT_START
-#error "Makefile needs BOOTADDR Defined"
-#endif
+//#ifndef BOOT_START
+//#error "Makefile needs BOOTADDR Defined"
+//#endif
+
+#define RELOAD_1MSEC (((F_CPU/1000)/256) - 1)
 
 #define HIGH(x) ( (uint8_t) (x >> 8) )
 #define LOW(x)  ( (uint8_t) x )
@@ -45,22 +47,11 @@ typedef uint8_t bool;
 #define LED_YELLOW PD6
 #define LED_RED    PD7
 
-// SPI Commands
-
-#define EXEC_PROG 0xAC
-
-#define READ_LOW_FLASH   0x20
-#define READ_HIGH_FLASH  0x28
-#define READ_DEVICEID    0x30
-#define WRITE_LOW_FLASH  0x40
-#define WRITE_HIGH_FLASH 0x48
-#define TRANSFER_FLASH   0x4C
-#define READ_EEPROM      0xA0
-#define WRITE_EEPROM     0xC0
-
 // Global
 
-static volatile unsigned long gMilliseconds;
+static volatile unsigned long long gMilliseconds;
+static volatile unsigned long long temp = 0;
+static unsigned long long lastSpiTimeout = 0;
 bool     gInProgramming = false;
 byte     gBuffer[SPM_PAGESIZE];
 uint16_t gFlashAddress = 0;
@@ -85,7 +76,7 @@ byte SPI_Receive(void)
   while(!(SPSR & (1<<SPIF)))
   {
     if(!gInProgramming)
-      if(gMilliseconds > BOOT_TIMEOUT) return 0x00;
+      if(gMilliseconds > SPI_TIMEOUT) return 0x00;
   }
 
   return SPDR;
@@ -94,7 +85,14 @@ byte SPI_Receive(void)
 void SPI_Send(byte data)
 {
   SPDR = data;
-  while(!(SPSR & (1<<SPIF)));
+  while(!(SPSR & (1<<SPIF)))
+  {
+    if(gMilliseconds - lastSpiTimeout > SPI_TIMEOUT)
+    {
+      lastSpiTimeout = gMilliseconds;
+      return;
+    }
+  }
 }
 
 // -------------------- Bootloader functions
@@ -130,16 +128,16 @@ void SetupLeds(void)
 
 void SetupTimer(void)
 {
-  TCCR2A = (1 << WGM21);
-  TCCR2B = (1 << CS22) | (1 << CS20);
-  TIMSK2 = (1 << OCIE2A);
-  OCR2A = ((F_CPU / 128) / 1000);
+  TCCR1B |= (1 << WGM12) | (1 << CS12);
+  TIMSK1 |= (1 << OCIE1A);
+  OCR1A = (((F_CPU/1000) / 256) - 1);
 }
 
 int main(void)
 {
-  byte data;
+  byte data, led, fuses;
   uint16_t buffSize;
+  char memType;
 
   // Disable Interrupts and move IVT
   cli();
@@ -147,7 +145,7 @@ int main(void)
   MCUCR = (1 << IVSEL);
 
   // Watchdog
-  //MCUSR = 0;
+  MCUSR = 0;
   wdt_disable();
 
   // Setup Board LEDS
@@ -160,30 +158,36 @@ int main(void)
   SetupSPI();
 
   // Turn Yellow ON Signal wait for data
-  LED_PORT &= ~(1 << LED_YELLOW);
+  /*
+  LED_PORT &= ~(1 << LED_RED);
   _delay_ms(500);
-  LED_PORT |= (1 << LED_YELLOW);
+  LED_PORT |= (1 << LED_RED);
   LED_PORT &= ~(1 << LED_GREEN);
+  */
 
   // Enable Interrupts
   sei();
-  //int tmp = 0;
 
   while(1)
   {
     _delay_us(1);
+    
     if(!gInProgramming)
       if(gMilliseconds > BOOT_TIMEOUT) break;
 
     data = SPI_Receive();
+    if(data == 0x00 && !gInProgramming) break;
+    
     switch(data)
     {
     case AVR_ENTERPROGRAMMING:  // Enter programming, suspend boot timeout
+      LED_PORT &= ~(1 << LED_YELLOW);
       gInProgramming = true;
       SPI_Send('\r');
       break;
     case AVR_LEAVEPROGRAMMING:  // Leave programming return to application
     case AVR_EXITBOOTLOADER:
+      LED_PORT &= ~(1 << LED_GREEN);
       gInProgramming = false;
       ExitBootloader();
       break;
@@ -247,10 +251,9 @@ int main(void)
       
     case AVR_STARTBLOCKREAD: // Read block
       buffSize = (SPI_Receive() << 8) | SPI_Receive();
-      char memType = SPI_Receive();
-      switch(memType)
+      memType = SPI_Receive();
+      if(memType == 'F')
       {
-      case 'F':
 	uint16_t tmp = 0;
 	for(uint16_t i = 0; i < buffSize; i += 2)
 	{
@@ -259,8 +262,9 @@ int main(void)
 	  SPI_Send(HIGH(tmp));
 	  gFlashAddress += 2;
 	}
-	break;
-      case 'E':
+      }
+      else if(memType == 'E')
+      {
 	uint8_t tmp = 0;
 	for(uint8_t i = 0; i < buffSize; i++)
 	{
@@ -268,25 +272,23 @@ int main(void)
 	  SPI_Send(tmp);
 	  gEepromAddress++;
 	}
-	break;
-      default:
+      }
+      else
 	SPI_Send('?');
-	break;
-      };
+
       break;
 
     case AVR_STARTBLOCKLOAD: // Write block
-      buffSize = (SPI_Receive() << 8) | SPI_Send();
+      buffSize = (SPI_Receive() << 8) | SPI_Receive();
       if(buffSize > SPM_PAGESIZE)
       {
 	SPI_Send('?');
 	break;
       }
 
-      char memType = SPI_Receive();
-      switch(memType)
+      memType = SPI_Receive();
+      if(memType == 'F')
       {
-      case 'F':
 	if(gFlashAddress > BOOT_START)
 	  SPI_Send(0);
 
@@ -305,8 +307,9 @@ int main(void)
 	boot_rww_enable();
 	gFlashAddress = tmpAddr;
 	SPI_Send('\r');
-	break;
-      case 'E':
+      }
+      else if(memType == 'E')
+      {
 	uint8_t tmp = 0;
 	for(uint16_t i = 0; i < buffSize; i++)
 	{
@@ -315,17 +318,15 @@ int main(void)
 	  gEepromAddress++;
 	}
 	SPI_Send('\r');
-	break;
-      default:
+      }
+      else
 	SPI_Send('?');
-	break;
-      };
 
       break;
 
     case AVR_SETLED:
       // We have 3 Leds Gree, Yellow, Green
-      uint8_t led = SPI_Receive();
+      led = SPI_Receive();
       if(led > 3) led = 0;
       if(led == 0) 
 	LED_PORT &= ~(1 << LED_GREEN);
@@ -343,7 +344,7 @@ int main(void)
       break;
 
     case AVR_CLEARLED:
-      uint8_t led = SPI_Receive();
+      led = SPI_Receive();
       if(led > 3) led = 0;
       if(led == 0) 
 	LED_PORT |= (1 << LED_GREEN);
@@ -360,20 +361,25 @@ int main(void)
       SPI_Send('\r');
       break;
 
+    /*
     case AVR_READLOWFUSEBITS:
-      uint8_t fuses = _SPM_GET_LOW_FUSEBITS();
+      fuses = boot_lock_fuse_bits_get(GET_LOW_FUSE_BITS);
+      SPI_Send(fuses);
+      break;
     case AVR_READHIGHFUSEBITS:
-      uint8_t fuses = _SPM_GET_HIGH_FUSEBITS();
+      fuses = boot_lock_fuse_bits_get(GET_HIGH_FUSE_BITS);
+      SPI_Send(fuses);
+      break;
     case AVR_READEXTFUSEBITS:
-      uint8_t fuses = _SPM_GET_EXTENDED_FUSEBITS();
+      fuses = boot_lock_fuse_bits_get(GET_EXTENDED_FUSE_BITS);
+      SPI_Send(fuses);
+      break;
     case AVR_READLOCKBITS:
-      uint8_t fuses = _SPM_GET_LOCKBITS();
+      fuses = boot_lock_fuse_bits_get(GET_LOCK_BITS);
       SPI_Send(fuses);
       break;
 
-
     // Not Implemented yet
-    /*
     case AVR_WRITEPROGLOW:
     case AVR_WRITEPROGHIGH:
     case AVR_PAGEWRITE:
@@ -387,13 +393,20 @@ int main(void)
       SPI_Send('?');
       break;
     };
+
   }
 
   ExitBootloader();
   return 0;
 }
 
-ISR(TIMER2_COMPA_vect)
+ISR(TIMER1_COMPA_vect)
 {
+  if(gMilliseconds - temp > 500)
+    {
+      LED_PORT ^= (1 << LED_RED);
+      temp = gMilliseconds;
+    }
+
   gMilliseconds++;
 }
