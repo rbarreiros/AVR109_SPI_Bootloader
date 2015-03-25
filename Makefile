@@ -6,7 +6,7 @@
 
 APPNAME = main
 MMCU = atmega328
-F_CPU = 20000000
+F_CPU = 16000000
 
 # Atmega328 0x380 * 2 = 0x7000 
 BOOTADDR = 0x7000
@@ -57,7 +57,7 @@ OBJDUMP = avr-objdump
 STRIP = avr-strip
 AVRDUDE = avrdude
 TARGET = $(APPNAME).elf
-TARGETS = $(TARGET) $(TARGET:%.elf=%.lss) $(TARGET:%.elf=%.hex) $(TARGET:%.elf=%.eep)
+TARGETS = $(TARGET) $(TARGET:%.elf=%.lss) $(TARGET:%.elf=%.hex)
 
 #CINPUTS   = $(wildcard *.c)
 #CXXINPUTS = $(wildcard *.cpp)
@@ -80,8 +80,8 @@ endif
 %.hex: $(TARGET)
 	$(OBJCOPY) -O ihex -j .text -j .data  $< $@
 
-%.eep: $(TARGET)
-	-$(OBJCOPY) -O ihex -j .text -j .data $< $@ || exit 0
+#%.bin: $(TARGET)
+#	$(OBJCOPY) -O bin -j .text -j .data $< $@
 
 %.lss: $(TARGET)
 	$(OBJDUMP) -h -S $< > $@

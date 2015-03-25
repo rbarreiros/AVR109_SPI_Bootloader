@@ -135,7 +135,8 @@ void SetupTimer(void)
 
 int main(void)
 {
-  byte data, led, fuses;
+  //byte data, led, fuses;
+  byte data, led;
   uint16_t buffSize;
   char memType;
 
