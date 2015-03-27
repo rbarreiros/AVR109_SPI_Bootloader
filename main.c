@@ -103,7 +103,7 @@ void ExitBootloader(void)
 
   // Disable Interrupts
   cli();
-  TIMSK2 = 0;
+  TIMSK1 = 0;
   SPCR = 0;
 
   // Do not forget the move IVT back to regular flash IVT
